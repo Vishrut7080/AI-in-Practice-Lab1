@@ -1,0 +1,13 @@
+__pycache__
+
+.env
+.venv
+
+*.pyc
+.pytest_cache/
+
+.aip_cache/
+.aip_traces/ 
+
+.DS_Store
+Thumbs.db 
