@@ -33,6 +33,9 @@ FEW_SHOT_IDS: list[str] = [
     # "T0123",   # teaches: ...
 ]
 
+def _run(ticket: str, schema, tier:str, temparature: float=None,
+         extra_prompt:str="")->dict:
+    system=SYSTEM_PROMPT+(('\n\n'))
 
 def load_examples(ids: list[str]) -> list[dict]:
     rows = [json.loads(l) for l in
