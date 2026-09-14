@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -17,7 +18,7 @@ sys.path.insert(0, str(ROOT))
 from aip.evals import compare, field_accuracy, load_cases, run_eval  # noqa: E402
 from labs.lab1.run_eval import GRADED_FIELDS  # noqa: E402
 from labs.lab2.stats import paired_test, wilson_interval  # noqa: E402
-from labs.lab2.variants import VARIANTS  # noqa: E402
+from labs.lab2.variants import VARIANTS, EVAL_EXCLUDE_IDS  # noqa: E402
 
 TICKETS_PER_DAY = 10_000
 
@@ -31,6 +32,24 @@ def metric(pred, gold) -> dict[str, float]:
     return m
 
 
+def paced(system, pace_s: float):
+    """Space live calls out. Free tiers throttle (gemini-3.7-flash is ~20
+    requests/min); without this, a burst just burns the quota and the run
+    fills with 429 errors instead of numbers."""
+    if pace_s <= 0:
+        return system
+
+    def wrapped(x):
+        if hasattr(system, "_last_called"):
+            delay = pace_s - (time.perf_counter() - system._last_called)
+            if delay > 0:
+                time.sleep(delay)
+        system._last_called = time.perf_counter()
+        return system(x)
+
+    return wrapped
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--variants", nargs="*", default=[])
@@ -38,6 +57,9 @@ def main() -> None:
     ap.add_argument("--split", choices=["dev", "test"], default="dev")
     ap.add_argument("--n", type=int, default=0)
     ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--pace", type=float, default=0.0,
+                    help="min seconds between cases (free tiers throttle: "
+                         "gemini-3.7-flash allows ~20 requests/min)")
     ap.add_argument("--budget", type=float, default=0.60)
     ap.add_argument("--save", default="")
     args = ap.parse_args()
@@ -47,12 +69,14 @@ def main() -> None:
         ap.error("give --variants or --all")
 
     cases = load_cases(ROOT / f"data/eval/extraction_{args.split}.jsonl")
+    if args.split == "dev":
+        cases = [c for c in cases if c.id not in EVAL_EXCLUDE_IDS]
     if args.n:
         cases = cases[: args.n]
 
     reports = []
     for name in names:
-        rep = run_eval(name, cases, VARIANTS[name], metric,
+        rep = run_eval(name, cases, paced(VARIANTS[name], args.pace), metric,
                        budget_usd=args.budget, workers=args.workers)
         print(rep.summary())
         agg = rep.aggregate()

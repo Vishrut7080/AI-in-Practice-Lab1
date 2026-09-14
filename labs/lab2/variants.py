@@ -42,7 +42,7 @@ FEW_SHOT_IDS: list[str] = [
 
 EVAL_EXCLUDE_IDS = frozenset(FEW_SHOT_IDS)
 
-def _run(ticket: str, schema, tier:str, temparature: float=None,
+def _run(ticket: str, schema, tier:str, temperature: float=None,
          extra_prompt:str="")->dict:
     """Call the model, then layer in the deterministic + business-rule fields.
  
@@ -53,8 +53,8 @@ def _run(ticket: str, schema, tier:str, temparature: float=None,
     """
     system = SYSTEM_PROMPT + ("\n\n" + extra_prompt if extra_prompt else "")
     kwargs = {"model": tier}
-    if temparature is not None:
-        kwargs["temperature"] = temparature
+    if temperature is not None:
+        kwargs["temperature"] = temperature
     try:
         rec = structured(ticket, schema=schema, system=system, **kwargs)
         fields = rec.model_dump()
@@ -217,27 +217,36 @@ def cascade(ticket: str) -> dict:
     # Record which path each ticket took -- set rec['_path'] = 'small' | 'large'
     # so grid.py can report the escalation rate.
     # """
-    """SMALL first; escalate to MAIN when two SMALL samples at T=0.7 disagree.
- 
-    Chosen deliberately as the strongest trigger the docstring lists ("2x
-    small cost, much the best") rather than the free-but-weaker ones
-    (validation failure, empty evidence, urgency>=4) -- those are cheaper but
-    the docstring is explicit that they're weaker signals, and this is a
-    quality-first cascade. Records which path each ticket took in `_path` so
-    grid.py can report the escalation rate.
+    """SMALL first; escalate to MAIN when two SMALL samples disagree.
+
+    Trigger chosen as the strongest the docstring lists: two SMALL samples
+    compared for agreement. The trap this avoids: two identical calls at the
+    same temperature are byte-identical (temperature 0) or, worse, the *same
+    cache key* even at temperature > 0 -- so the response cache serves the
+    second sample from the first, disagreement is never detected, and the
+    escalation rate silently pins at 0%. The fix is to draw the two samples
+    under *different* cache keys / sampling: the first at the deterministic
+    default (T=0, which also replays the zero_shot baseline from cache for
+    free) and the second at T=0.9, which is a genuinely fresh stochastic draw.
+    Records which path each ticket took in `_path` so grid.py can report the
+    escalation rate; the second sample is stashed in `_sample_b` so the
+    agreement-when-right vs agreement-when-wrong analysis is possible
+    post-hoc.
     """
-    a = _run(ticket, TicketRecord, "SMALL", temparature=0.7)
-    b = _run(ticket, TicketRecord, "SMALL", temparature=0.7)
- 
+    a = _run(ticket, TicketRecord, "SMALL")
+    b = _run(ticket, TicketRecord, "SMALL", temperature=0.9)
+
     disagree_fields = ("category", "urgency", "sentiment", "product", "language")
     disagreement = any(a.get(f) != b.get(f) for f in disagree_fields)
- 
+
     if not disagreement:
         a["_path"] = "small"
+        a["_sample_b"] = b
         return a
- 
+
     result = _run(ticket, TicketRecord, "MAIN")
     result["_path"] = "large"
+    result["_sample_b"] = b
     return result
 
 
